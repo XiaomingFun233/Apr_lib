@@ -11,7 +11,7 @@ from torch.utils.cpp_extension import (
     CUDA_HOME,
 )
 
-library_name = "ops"
+library_name = "apr"
 
 if torch.__version__ >= "2.6.0":
     py_limited_api = True
