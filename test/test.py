@@ -2,7 +2,7 @@ import torch
 from torch.testing._internal.common_utils import TestCase
 from torch.testing._internal.optests import opcheck
 import unittest
-import ops
+import apr
 from torch import Tensor
 from typing import Tuple
 import torch.nn.functional as F

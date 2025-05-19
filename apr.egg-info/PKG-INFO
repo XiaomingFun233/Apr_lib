@@ -1,0 +1,11 @@
+Metadata-Version: 2.1
+Name: apr
+Version: 0.0.1
+Summary: ming ops of PyTorch C++ and CUDA extensions
+Home-page: https://github.com/pytorch/extension-cpp
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: torch
+
+# Apr_lib
+my own ops lib
