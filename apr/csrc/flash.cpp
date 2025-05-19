@@ -1,4 +1,5 @@
 #include <torch/all.h>
+#include <ATen/Operators.h>
 #include <torch/library.h>
 #include <vector>
 #include <Python.h>
