@@ -43,7 +43,7 @@ class Testflash(TestCase):
     def _test_correctness(self, device):
         samples = self.sample_inputs(device)
         for args in samples:
-            result = ops.apr.flash(*args)
+            result = apr.ops.flash(*args)
             expected = reference_flash(*args)
             torch.testing.assert_close(result, expected)
 

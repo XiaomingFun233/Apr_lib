@@ -44,7 +44,7 @@ def get_extensions():
         extra_compile_args["nvcc"].append("-g")
         extra_link_args.extend(["-O0", "-g"])
 
-    this_dir = os.path.dirname(os.path.curdir)
+    this_dir = os.path.dirname(os.path.abspath(__file__))
     extensions_dir = os.path.join(this_dir, library_name, "csrc")
     sources = list(glob.glob(os.path.join(extensions_dir, "*.cpp")))
 
@@ -70,7 +70,7 @@ def get_extensions():
 setup(
     name=library_name,
     version="0.0.1",
-    packages=find_packages(),
+    packages=find_packages(include=["apr", "apr.*"]),
     ext_modules=get_extensions(),
     install_requires=["torch"],
     description="ming ops of PyTorch C++ and CUDA extensions",
