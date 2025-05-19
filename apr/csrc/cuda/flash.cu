@@ -181,7 +181,8 @@ __global__ void flash_kernel(float* Q,float* K,float* V,float* O,float* L,float*
     
     //debug 思路 只保留少数线程进行计算即可
 }//线程分配的困难，因为不是一个块无法共享内存，无法使用sram进行通信，所以划分块和数据的索引变成了最大的困难，目前的方法每个块里面在一些计算阶段都会有很多闲置线程
-at::Tensor flash_cuda(const at::Tensor& Q, const at::Tensor& K, const at::Tensor& V,int n,int m,int d_k,int d_v) {
+at::Tensor flash_cuda(const at::Tensor& Q, const at::Tensor& K, const at::Tensor& V,
+                     int64_t n, int64_t m, int64_t d_k, int64_t d_v) {
   // Check that K and V have the same dimensions
   TORCH_CHECK(K.sizes() == V.sizes(), "K and V must have the same dimensions");
   // Check that the last dimension of Q matches the last dimension of K
@@ -218,19 +219,19 @@ at::Tensor flash_cuda(const at::Tensor& Q, const at::Tensor& K, const at::Tensor
   float* M_ptr = M.data_ptr<float>();
   
   // Define block sizes
-  const int block_m = 32;
-  const int block_n = 32;
+  constexpr int block_m = 32;
+  constexpr int block_n = 32;
   
   // Define thread block dimensions
-  const int num_threads_x = 16;
-  const int num_threads_y = 16;
+  constexpr int num_threads_x = 16;
+  constexpr int num_threads_y = 16;
   dim3 threads(num_threads_x, num_threads_y);
   
   // Calculate grid dimensions based on sequence length
   int grid_dim = (seq_len + block_m - 1) / block_m;
   
   // Launch kernel with template parameters using the provided dimensions
-  flash_kernel<num_threads_x, num_threads_y, /*d_model=*/m, /*d_q=*/d_k, block_m, block_n>
+  flash_kernel<num_threads_x, num_threads_y, 32, 32, block_m, block_n>
       <<<grid_dim, threads>>>(Q_ptr, K_ptr, V_ptr, result_ptr, L_ptr, M_ptr);
 
   return result;

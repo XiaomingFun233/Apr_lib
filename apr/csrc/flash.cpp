@@ -1,6 +1,7 @@
 #include <torch/all.h>
 #include <torch/library.h>
 #include <vector>
+#include <Python.h>
 
 extern "C" {
   /* Creates a dummy empty _C module that can be imported from Python.
@@ -33,7 +34,7 @@ namespace apr {
     output = {n x d_v}
 */
 at::Tensor flash_cpu(const at::Tensor& Q, const at::Tensor& K, const at::Tensor& V,
-                 int n, int m, int d_k, int d_v) {
+                 int64_t n, int64_t m, int64_t d_k, int64_t d_v) {
     // Compute Q*K^T
     auto scores = torch::zeros({n, m}, Q.options());
     auto q_accessor = Q.accessor<float, 2>();
