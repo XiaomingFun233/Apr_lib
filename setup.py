@@ -79,3 +79,4 @@ setup(
     url="https://github.com/pytorch/extension-cpp",
     cmdclass={"build_ext": BuildExtension},
     options={"bdist_wheel": {"py_limited_api": "cp39"}} if py_limited_api else {},
+)

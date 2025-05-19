@@ -43,7 +43,7 @@ class Testflash(TestCase):
     def _test_correctness(self, device):
         samples = self.sample_inputs(device)
         for args in samples:
-            result = ops.ops.flash(*args)
+            result = ops.apr.flash(*args)
             expected = reference_flash(*args)
             torch.testing.assert_close(result, expected)
 
@@ -59,7 +59,7 @@ class Testflash(TestCase):
         samples = self.sample_inputs(device, requires_grad=True)
         samples.extend(self.sample_inputs(device, requires_grad=False))
         for args in samples:
-            opcheck(torch.ops.ops.flash.default, args)
+            opcheck(torch.ops.apr.flash.default, args)
 
     def test_opcheck_cpu(self):
         self._opcheck("cpu")
