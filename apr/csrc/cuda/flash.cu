@@ -10,10 +10,10 @@ namespace apr{
 
 template<const int num_threads_x,
         const int num_threads_y,
-        const int d_model,
-        const int d_q,
-        const int block_m,
-        const int block_n
+        const int N,
+        const int d,
+        const int b_r,
+        const int b_c
 >
 __global__ void flash_kernel(float* Q,float* K,float* V,float* O,float* L,float* M){
     /*
@@ -212,12 +212,12 @@ at::Tensor flash_cuda(const at::Tensor& Q, const at::Tensor& K, const at::Tensor
   float* M_ptr = M.data_ptr<float>();
   
   // Define block sizes
-  const int block_m = 32;
-  const int block_n = 32;
+  const int block_m = 4;
+  const int block_n = 4;
   
   // Define thread block dimensions
-  const int num_threads_x = 16;
-  const int num_threads_y = 16;
+  const int num_threads_x = 128;
+  const int num_threads_y = 2;
   dim3 threads(num_threads_x, num_threads_y);
   
   // Calculate grid dimensions based on sequence length
