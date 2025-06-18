@@ -8,20 +8,6 @@
 #include <math.h>
 namespace apr{
 
-template <unsigned int blockSize>
-__device__ __forceinline__ float warpReduceSum(float sum) {
-    if (blockSize >= 32)sum += __shfl_down_sync(0xffffffff, sum, 16); // 0-16, 1-17, 2-18, etc.
-    if (blockSize >= 16)sum += __shfl_down_sync(0xffffffff, sum, 8);// 0-8, 1-9, 2-10, etc.
-    if (blockSize >= 8)sum += __shfl_down_sync(0xffffffff, sum, 4);// 0-4, 1-5, 2-6, etc.
-    if (blockSize >= 4)sum += __shfl_down_sync(0xffffffff, sum, 2);// 0-2, 1-3, 4-6, 5-7, etc.
-    if (blockSize >= 2)sum += __shfl_down_sync(0xffffffff, sum, 1);// 0-1, 2-3, 4-5, etc.
-    return sum;
-}
-/*、
-    int stride_qm,int stride_qk,
-    int stride_kk,int stride_kn,
-    int stride_vm,int stride_vn
-*/
 template<const int num_threads_x,
         const int num_threads_y,
         const int d_model,
