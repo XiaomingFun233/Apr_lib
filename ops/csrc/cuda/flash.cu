@@ -1,6 +1,7 @@
 #include <cooperative_groups.h>
 #include <torch/extension.h>
 #include <cuda_runtime.h>
+#include <cfloat>
 #include <stdio.h>
 #include <stdlib.h>  
 #include <time.h>
@@ -30,157 +31,164 @@ template<const int num_threads_x,
 >
 __global__ void flash_kernel(float* Q,float* K,float* V,float* O,float* L,float* M){
     /*
-    block_m is b_r
-    block_n is b_c
-    N is d_model
+    parameter: name base on paper
 
-    m in d_model n in d_q k in d_v
+    m in N
+    n in d_k
+    k in d_v
 
-    o_size = d_model x d_q
+    o_size = N x d
 
-    q_size = d_model x d_q
-    k_size = d_model x d_q
-    v_size = d_model x d_q
+    q_size = N x d
+    k_size = N x d
+    v_size = N x d
     */
 
-    __shared__ float q[block_m][d_q];
-    __shared__ float k[block_n][d_q];
-    __shared__ float v[block_n][d_q];
-    __shared__ float o[block_m][d_q];
-    __shared__ float s[block_m][block_n];
-
-    __shared__ float l[block_m];
-    __shared__ float m[block_m];
-    int thread_num_inblock = num_threads_x*num_threads_y; 
-    int T_r =  (int)(d_model / block_m);
-    int T_c =  (int)(d_model / block_n);
-    //global idx
-    unsigned int g_idx = threadIdx.x + threadIdx.y*blockDim.x + thread_num_inblock*blockIdx.x;//grid must be a one dimensional vector like <<<1 ,(256,32) >>> 
-    unsigned int b_idx = threadIdx.x + threadIdx.y*blockDim.x;
-    unsigned int warpId = b_idx / 32;
-    unsigned int laneId = b_idx % 32;
-    //assumption that is one data for one thread and block_m == block_n
-    
+    //SRAM allocation step 3 in paper
+    __shared__ float q[b_r][d];
+    __shared__ float k[b_c][d];
+    __shared__ float v[b_c][d];
+    int T_r =  (int)(N / b_r); // divide operations are slow in GPU find a way to replace it
+    int T_c =  (int)(N / b_c);
+    //SRAM allocation step 4 in paper
+    __shared__ float o[b_r][d];
+    __shared__ float s[b_r][b_c];
+    __shared__ float l[b_r];
+    __shared__ float m[b_r];
+    float scale = 1.0f / sqrtf((float)d);
+    //calculate the thread num in block and the thread num in row and col
+    int thread_num_inblock = num_threads_x*num_threads_y;
+    unsigned int b_idx = threadIdx.x + threadIdx.y*blockDim.x;// 2D matrix but 1D idx
+    int data_num_block_q = d * b_r;//for q and o
+    int data_num_block_k = d * b_c;//for k v
+    //assumption that is one data for one thread and b_r == b_c
+   
     //load gmem to smem
-    if(g_idx < d_q*d_model){
-        int data_num_block_q = d_q * block_m;//for q and o 
-        int data_num_block_k = d_q * block_n;//for k v
-        int row_kv = ((g_idx / d_q)%block_n);
-        int row_qo = ((g_idx / d_q)%block_m);
-        v[row_kv][g_idx % d_q] = V[g_idx];
-        k[row_kv][g_idx % d_q] = K[g_idx];
-        for(int iter = 0;iter < T_r;iter++){
-            q[row_qo][g_idx%d_q] = Q[g_idx % data_num_block_q + iter*block_m*d_q];
-            o[row_kv][g_idx%d_q] = O[g_idx % data_num_block_q + iter*block_m*d_q];
-            if(b_idx < block_m){
-                l[b_idx % block_m] = L[b_idx % block_m + iter*block_m];
-                m[b_idx % block_m] = M[b_idx % block_m + iter*block_m];
+    for(int j = 0;j < T_c;j++){//step 5
+        for(int idx = b_idx;idx < data_num_block_k;idx += blockDim.x * blockDim.y){
+            
+            v[idx / d][idx % d] = V[idx  + j * data_num_block_k];//each block load its own gmem to smem
+            k[idx / d][idx % d] = K[idx  + j * data_num_block_k];//in paper it is step 6
+        }
+        __syncthreads();
+        for(int iter = 0;iter < T_r;iter++){//step 7
+           for (int i = b_idx; i < b_r * d; i += blockDim.x * blockDim.y) {
+                int row = i / d;
+                int col = i % d;
+                q[row][col] = Q[iter * b_r * d + i];
+                o[row][col] = O[iter * b_r * d + i];
             }
+
+            for(int idx = b_idx;idx < b_r;idx += blockDim.x * blockDim.y){
+                l[idx] = L[idx + iter*b_r];
+                m[idx] = M[idx + iter*b_r];
+            }
+            __syncthreads();
             //mat multiply
-            //semm
+            //semm step 9
             int tx = threadIdx.x;
             int ty = threadIdx.y;
-            if(b_idx < d_q*block_m){
-                __shared__ float tmp_sum[block_m][d_q];
-                for(int z = 0;z < block_n;z++){
-                    tmp_sum[ty][tx] = q[ty][tx]*k[z][tx];
-                    
-                    if(tx == 0){
-                        float sum = 0;
-                        for(int i=0;i < d_q;i++){
-                            sum += tmp_sum[ty][i];
-                        }
-                        s[ty][z] = sum;//s_ij
-                        
-                        
+           
+            for (int row = ty; row < b_r; row += blockDim.y) {
+                for (int col = tx; col < b_c; col += blockDim.x) {
+                    float sum = 0.0f;
+                    for (int k_dim = 0; k_dim < d; k_dim++) {
+                        sum += q[row][k_dim] * k[col][k_dim];
                     }
-                    __syncthreads();
-                    tmp_sum[ty][tx] = 0;
+                    // *** BUG FIX 1: 增加了缩放步骤 ***
+                    s[row][col] = sum * scale;
                 }
             }
-            
+            __syncthreads(); // Essential: All threads must finish computing their part of 's'
+           
             //step 10
             //calculate the max
-            __shared__ float m_up[block_m];
-            __shared__ float l_up[block_m];
-            if(tx == 0)
-            {
-                float big = INT_MIN;
-                for(int z=0;z < block_n;z++){
-                    big = max(big,s[ty][z]);
+            __shared__ float m_up[b_r];
+            __shared__ float l_up[b_r];
+            if (tx == 0) {
+                for (int row = ty; row < b_r; row += blockDim.y) {
+                    // 1. 找最大值 m_up
+                    float row_max = -FLT_MAX;
+                    for (int col = 0; col < b_c; col++) {
+                        if (s[row][col] > row_max) {
+                            row_max = s[row][col];
+                        }
+                    }
+                    m_up[row] = row_max;
+
+                    // 2. 计算 P_ij 并求和得到 l_up
+                    float row_sum_exp = 0.0f;
+                    for (int col = 0; col < b_c; col++) {
+                        float p_val = __expf(s[row][col] - row_max);
+                        s[row][col] = p_val; // 将 s 矩阵原地更新为 P 矩阵
+                        row_sum_exp += p_val;
+                    }
+                    l_up[row] = row_sum_exp;
                 }
-                m_up[ty] = big;
             }
             __syncthreads();
-            //calculate the p_ij
-            if(b_idx < block_m * block_n){
-                int row = b_idx / block_n;
-                int col = b_idx % block_n;
-                s[row][col] = __expf(s[row][col]-m_up[row]);//p_ij
-            }
-            __syncthreads();
-            //calculate the l_up_ij
-            if(tx == 0)
-            {
-                float sum = 0;
-                for(int z=0;z < block_n;z++){
-                    sum += s[ty][z];//l_up_ij
-                }
-                l_up[ty] = sum;
-            }
-            __syncthreads();
+
             //step 11
-            __shared__ float m_new[block_m];
-            __shared__ float l_new[block_m];
-            if(b_idx == 0){
-                for(int i=0;i < block_m;i++){
-                    m_new[i] = max(m[i],m_up[i]);
-                    l_new[i] = __expf(m[i]-m_new[i])*l[i] + l_up[i]*__expf(m_up[i]-m_new[i]);
+            __shared__ float m_new[b_r];
+            __shared__ float l_new[b_r];
+            if (tx == 0) {
+                for (int row = ty; row < b_r; row += blockDim.y) {
+                    m_new[row] = fmaxf(m[row], m_up[row]);
+                    l_new[row] = __expf(m[row] - m_new[row]) * l[row] + __expf(m_up[row] - m_new[row]) * l_up[row];
                 }
-                
             }
             __syncthreads();
             //calculate o_i
-            __shared__ float pv[block_m][d_q];
-            int row_s = b_idx / block_n;
-            int col_s = b_idx % block_n;
-            __shared__ float acc[block_m][block_n];
-            //mat mutliply
-            for(int z = 0;z < d_q;z++){
-                if(b_idx < block_m*block_n){
-                    acc[row_s][col_s] = s[row_s][col_s]*v[col_s][z];//p_ij*v_ij
-                }
-                
-                //__syncthreads();
-                //reduce it or just sum it up
-                if(b_idx < block_m*block_n && col_s == 0){
-                    float sum = 0;
-                    for(int i=0;i < block_n;i++){
-                        sum += acc[row_s][i];
-                    }
-                    pv[row_s][z] = sum;
-                }
-                __syncthreads();
-                if(b_idx < block_m*block_n){
-                    acc[row_s][col_s] = 0;
-                }
-            }
-            o[row_qo][g_idx%d_q] = l[row_qo]*__expf(m[row_qo]-m_new[row_qo])*o[row_qo][g_idx%d_q] + __expf(m_up[row_qo]-m_new[row_qo])*pv[row_qo][g_idx%d_q];
-            //write back L and M
-            if(b_idx < block_m){
-                L[b_idx % block_m + iter*block_m] = l_new[b_idx];
-                M[b_idx % block_m + iter*block_m] = m_new[b_idx];
-            }
-            
-            //write back to o
-            O[g_idx % data_num_block_q + iter*block_m*d_q] = o[row_qo][g_idx%d_q];
-            
+            __shared__ float pv[b_r][d];
+            // Each thread (ty, tx) will be responsible for computing one element pv[ty][tx].
+            // This requires iterating through the inner dimension 'b_c'.
 
+            for (int row = ty; row < b_r; row += blockDim.y) {
+                for (int col = tx; col < d; col += blockDim.x) {
+                    float pv_sum = 0.0f;
+                    for (int k_dim = 0; k_dim < b_c; k_dim++) {
+                        pv_sum += s[row][k_dim] * v[k_dim][col];
+                    }
+                    pv[row][col] = pv_sum;
+                }
+            }
+            __syncthreads();
+            for (int row = ty; row < b_r; row += blockDim.y) {
+                float m_old = m[row];
+                float l_old = l[row];
+                float m_new_val = m_new[row];
+                float l_new_val = l_new[row];
+
+                for (int col = tx; col < d; col += blockDim.x) {
+                    float o_old = o[row][col];
+                    float pv_val = pv[row][col];
+                    // 更新公式
+                    o[row][col] = (l_old * __expf(m_old - m_new_val) * o_old + __expf(m_up[row] - m_new_val) * pv_val) / l_new_val;
+                }
+            }
+             __syncthreads();
+             if (tx == 0) {
+                 for (int row = ty; row < b_r; row += blockDim.y) {
+                    l[row] = l_new[row];
+                    m[row] = m_new[row];
+                 }
+            }
+            __syncthreads();
+
+            for (int i = b_idx; i < b_r * d; i += blockDim.x * blockDim.y) {
+                O[iter * b_r * d + i] = o[i / d][i % d];
+            }
+            for (int i = b_idx; i < b_r; i += blockDim.x * blockDim.y) {
+                L[iter * b_r + i] = l[i];
+                M[iter * b_r + i] = m[i];
+            }
+            __syncthreads();
         }
+        
     }
-    
-    //debug 思路 只保留少数线程进行计算即可
-}//线程分配的困难，因为不是一个块无法共享内存，无法使用sram进行通信，所以划分块和数据的索引变成了最大的困难，目前的方法每个块里面在一些计算阶段都会有很多闲置线程
+   
+   
+}//thread block must bigger than max(b_r,b_c) * d
 at::Tensor flash_cuda(const at::Tensor& Q, const at::Tensor& K, const at::Tensor& V,int n,int m,int d_k,int d_v) {
   // Check that K and V have the same dimensions
   TORCH_CHECK(K.sizes() == V.sizes(), "K and V must have the same dimensions");
